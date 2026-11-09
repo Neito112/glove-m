@@ -46,9 +46,11 @@ TEST(build_anthropic_request)
 {
     mock_llm_set_backend(LLM_BACKEND_ANTHROPIC, "claude-test-model");
 
-    char *request = json_build_request("sys prompt", NULL, 0, "hello",
-                                       s_test_tools, 1);
-    ASSERT(request != NULL);
+    char request[4096];
+    size_t request_len = json_build_request_into(request, sizeof(request),
+                                                 "sys prompt", NULL, 0, "hello",
+                                                 s_test_tools, 1);
+    ASSERT(request_len > 0);
 
     cJSON *root = cJSON_Parse(request);
     ASSERT(root != NULL);
@@ -74,7 +76,6 @@ TEST(build_anthropic_request)
     ASSERT(input_schema != NULL && cJSON_IsObject(input_schema));
 
     cJSON_Delete(root);
-    free(request);
     return 0;
 }
 
@@ -82,9 +83,11 @@ TEST(build_openai_request)
 {
     mock_llm_set_backend(LLM_BACKEND_OPENAI, "gpt-test-model");
 
-    char *request = json_build_request("sys prompt", NULL, 0, "hello",
-                                       s_test_tools, 1);
-    ASSERT(request != NULL);
+    char request[4096];
+    size_t request_len = json_build_request_into(request, sizeof(request),
+                                                 "sys prompt", NULL, 0, "hello",
+                                                 s_test_tools, 1);
+    ASSERT(request_len > 0);
 
     cJSON *root = cJSON_Parse(request);
     ASSERT(root != NULL);
@@ -121,7 +124,6 @@ TEST(build_openai_request)
     ASSERT_STR_EQ(type->valuestring, "function");
 
     cJSON_Delete(root);
-    free(request);
     return 0;
 }
 
@@ -129,9 +131,11 @@ TEST(build_openrouter_request)
 {
     mock_llm_set_backend(LLM_BACKEND_OPENROUTER, "openrouter-test-model");
 
-    char *request = json_build_request("sys prompt", NULL, 0, "hello",
-                                       s_test_tools, 1);
-    ASSERT(request != NULL);
+    char request[4096];
+    size_t request_len = json_build_request_into(request, sizeof(request),
+                                                 "sys prompt", NULL, 0, "hello",
+                                                 s_test_tools, 1);
+    ASSERT(request_len > 0);
 
     cJSON *root = cJSON_Parse(request);
     ASSERT(root != NULL);
@@ -142,7 +146,6 @@ TEST(build_openrouter_request)
     ASSERT(max_completion_tokens == NULL);
 
     cJSON_Delete(root);
-    free(request);
     return 0;
 }
 
@@ -160,8 +163,11 @@ TEST(build_openai_request_skips_orphan_tool_result)
     strncpy(history[1].role, "user", sizeof(history[1].role) - 1);
     strncpy(history[1].content, "remember my name is Ted", sizeof(history[1].content) - 1);
 
-    char *request = json_build_request("sys prompt", history, 2, NULL, s_test_tools, 1);
-    ASSERT(request != NULL);
+    char request[4096];
+    size_t request_len = json_build_request_into(request, sizeof(request),
+                                                 "sys prompt", history, 2, NULL,
+                                                 s_test_tools, 1);
+    ASSERT(request_len > 0);
 
     cJSON *root = cJSON_Parse(request);
     ASSERT(root != NULL);
@@ -183,7 +189,6 @@ TEST(build_openai_request_skips_orphan_tool_result)
     ASSERT_STR_EQ(second_role->valuestring, "user");
 
     cJSON_Delete(root);
-    free(request);
     return 0;
 }
 

@@ -45,6 +45,54 @@ TOOL_ENTRY("dht_read",
            "{\"type\":\"object\",\"properties\":{\"pin\":{\"type\":\"integer\"},\"model\":{\"type\":\"string\",\"enum\":[\"dht11\",\"dht22\"]},\"retries\":{\"type\":\"integer\"}},\"required\":[\"pin\",\"model\"]}",
            tools_dht_read_handler)
 
+// ESP-NOW
+TOOL_ENTRY("espnow_send",
+           "Send a command to another ESP32 over ESP-NOW and wait for its answer. The address is the MAC notation AA:BB:CC:DD:EE:FF.",
+           "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\"},\"command\":{\"type\":\"string\",\"enum\":[\"on\",\"off\",\"toggle\",\"status\"]}},\"required\":[\"address\",\"command\"]}",
+           tools_espnow_send_handler)
+TOOL_ENTRY("espnow_ping",
+           "Ping every peer on the ESP-NOW channel and list the ones that answered.",
+           "{\"type\":\"object\",\"properties\":{}}",
+           tools_espnow_ping_handler)
+TOOL_ENTRY("espnow_list_peers",
+           "List the peers seen on the ESP-NOW channel with their last reported state.",
+           "{\"type\":\"object\",\"properties\":{}}",
+           tools_espnow_list_peers_handler)
+
+// Peripherals
+TOOL_ENTRY("peripheral_setup",
+           "Set up a peripheral on the GPIO pins of this device. The wiring is stored, so it survives a restart. The type is one of button, encoder, analog, oled, lcd, mic or speaker. Use the pin fields that belong to the type: pin for a button or an analog sensor; pin_a, pin_b and pin_sw for an encoder; pin_sda, pin_scl and address for an OLED; pin_mosi, pin_clk, pin_dc, pin_cs and pin_rst for an LCD; pin_b, pin_ws and pin_din for a microphone; pin_b, pin_ws and pin_dout for a speaker. Plain LEDs need no setup, use gpio_write instead.",
+           "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"enum\":[\"button\",\"encoder\",\"analog\",\"oled\",\"lcd\",\"mic\",\"speaker\"]},\"pin\":{\"type\":\"integer\"},\"pin_a\":{\"type\":\"integer\"},\"pin_b\":{\"type\":\"integer\"},\"pin_sw\":{\"type\":\"integer\"},\"pin_sda\":{\"type\":\"integer\"},\"pin_scl\":{\"type\":\"integer\"},\"pin_mosi\":{\"type\":\"integer\"},\"pin_clk\":{\"type\":\"integer\"},\"pin_dc\":{\"type\":\"integer\"},\"pin_cs\":{\"type\":\"integer\"},\"pin_rst\":{\"type\":\"integer\"},\"pin_ws\":{\"type\":\"integer\"},\"pin_din\":{\"type\":\"integer\"},\"pin_dout\":{\"type\":\"integer\"},\"address\":{\"type\":\"integer\"},\"frequency_hz\":{\"type\":\"integer\"},\"width\":{\"type\":\"integer\"},\"height\":{\"type\":\"integer\"},\"pullup\":{\"type\":\"boolean\"},\"inverted\":{\"type\":\"boolean\"}},\"required\":[\"type\"]}",
+           tools_peripheral_setup_handler)
+TOOL_ENTRY("peripheral_list",
+           "List the peripherals that are set up on this device with their pin assignment.",
+           "{\"type\":\"object\",\"properties\":{}}",
+           tools_peripheral_list_handler)
+TOOL_ENTRY("peripheral_remove",
+           "Remove a peripheral from this device.",
+           "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"enum\":[\"button\",\"encoder\",\"analog\",\"oled\",\"lcd\",\"mic\",\"speaker\"]}},\"required\":[\"type\"]}",
+           tools_peripheral_remove_handler)
+TOOL_ENTRY("peripheral_input",
+           "Read the button presses and encoder turns that happened since the last check.",
+           "{\"type\":\"object\",\"properties\":{}}",
+           tools_peripheral_input_handler)
+TOOL_ENTRY("peripheral_display",
+           "Write a text line on the display, or clear it.",
+           "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"row\":{\"type\":\"integer\"},\"clear\":{\"type\":\"boolean\"}}}",
+           tools_peripheral_display_handler)
+TOOL_ENTRY("peripheral_analog_read",
+           "Read the analog sensor and report the raw value and the voltage.",
+           "{\"type\":\"object\",\"properties\":{}}",
+           tools_peripheral_analog_handler)
+TOOL_ENTRY("peripheral_speaker",
+           "Play a tone on the speaker.",
+           "{\"type\":\"object\",\"properties\":{\"frequency_hz\":{\"type\":\"integer\"},\"duration_ms\":{\"type\":\"integer\"}}}",
+           tools_peripheral_speaker_handler)
+TOOL_ENTRY("peripheral_mic_read",
+           "Read the microphone level.",
+           "{\"type\":\"object\",\"properties\":{}}",
+           tools_peripheral_mic_handler)
+
 // Memory
 TOOL_ENTRY("memory_set",
            "Store a user memory value.",

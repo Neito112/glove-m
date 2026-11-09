@@ -4,9 +4,12 @@
 #include "boot_guard.h"
 #include "channel.h"
 #include "config.h"
+#include "espnow.h"
 #include "memory.h"
 #include "nvs_keys.h"
 #include "wifi_credentials.h"
+#include "peripheral.h"
+#include "peripheral_input.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -337,8 +340,7 @@ static bool format_wifi_status(char *result, size_t result_len)
 
 static bool format_wifi_scan(char *result, size_t result_len)
 {
-    esp_err_t err;
-    wifi_scan_config_t scan_cfg = {0};
+    esp_err_t err;    wifi_scan_config_t scan_cfg = {0};
     wifi_ap_record_t records[LOCAL_ADMIN_WIFI_SCAN_LIMIT];
     uint16_t ap_total = 0;
     uint16_t record_count = LOCAL_ADMIN_WIFI_SCAN_LIMIT;
@@ -417,6 +419,50 @@ static bool format_wifi_scan(char *result, size_t result_len)
 
     return true;
 }
+
+static bool format_espnow_status(char *result, size_t result_len)
+{
+    espnow_peer_t peers[ESPNOW_MAX_PEERS];
+    int count = espnow_list_peers(peers, ESPNOW_MAX_PEERS);
+
+    if (!espnow_is_ready()) {
+        snprintf(result, result_len, "ESP-NOW (%s): not ready yet", espnow_device_name());
+        return true;
+    }
+
+    if (count == 0) {
+        snprintf(result, result_len, "ESP-NOW (%s): ready, no peer seen yet",
+                 espnow_device_name());
+        return true;
+    }
+
+    int written = snprintf(result, result_len, "ESP-NOW (%s): ready, %d peer(s):",
+                            espnow_device_name(), count);
+    for (int i = 0; i < count && written > 0 && (size_t)written < result_len; ++i) {
+        const char *state = peers[i].last_state == 255
+            ? "?"
+            : (peers[i].last_state ? "ON" : "OFF");
+        const char *name = peers[i].name[0] ? peers[i].name : "unnamed";
+        written += snprintf(result + written, result_len - (size_t)written,
+                            " %s(%s,%s)", name, peers[i].address, state);
+    }
+    return true;
+}
+
+static bool format_espnow_ping(char *result, size_t result_len)
+{
+    if (!espnow_is_ready()) {
+        snprintf(result, result_len, "Error: ESP-NOW is not ready yet");
+        return false;
+    }
+
+    espnow_broadcast_ping();
+
+    // Give the peers a moment to answer before the list is read.
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    return format_espnow_status(result, result_len);
+}
 #else
 static char s_test_wifi_status[256] = "WiFi status: mock";
 static char s_test_wifi_scan[256] = "WiFi scan: mock";
@@ -431,6 +477,18 @@ static bool format_wifi_status(char *result, size_t result_len)
 static bool format_wifi_scan(char *result, size_t result_len)
 {
     snprintf(result, result_len, "%s", s_test_wifi_scan);
+    return true;
+}
+
+static bool format_espnow_status(char *result, size_t result_len)
+{
+    snprintf(result, result_len, "ESP-NOW: mock");
+    return true;
+}
+
+static bool format_espnow_ping(char *result, size_t result_len)
+{
+    snprintf(result, result_len, "ESP-NOW: mock");
     return true;
 }
 #endif
@@ -450,7 +508,9 @@ bool local_admin_is_command(const char *message)
     return agent_is_command(message, "reboot") ||
            agent_is_command(message, "wifi") ||
            agent_is_command(message, "bootcount") ||
-           agent_is_command(message, "factory-reset");
+           agent_is_command(message, "factory-reset") ||
+           agent_is_command(message, "espnow") ||
+           agent_is_command(message, "peripheral");
 }
 
 bool local_admin_handle_command(const char *message,
@@ -567,6 +627,160 @@ bool local_admin_handle_command(const char *message,
         return false;
     }
 
+    if (agent_is_command(message, "espnow")) {
+        payload = agent_command_payload(message, "espnow");
+        if (!payload || payload[0] == '\0' || strcmp(payload, "status") == 0) {
+            return format_espnow_status(result, result_len);
+        }
+
+        if (strlen(payload) >= sizeof(payload_buf)) {
+            snprintf(result, result_len, "Error: /espnow arguments too long");
+            return false;
+        }
+
+        snprintf(payload_buf, sizeof(payload_buf), "%s", payload);
+        token = strtok(payload_buf, " \t\r\n");
+        extra = strtok(NULL, " \t\r\n");
+        if (!token) {
+            return format_espnow_status(result, result_len);
+        }
+
+        if (strcmp(token, "status") == 0) {
+            return format_espnow_status(result, result_len);
+        }
+        if (strcmp(token, "ping") == 0) {
+            if (extra != NULL) {
+                snprintf(result, result_len, "Error: /espnow ping takes no argument");
+                return false;
+            }
+            return format_espnow_ping(result, result_len);
+        }
+
+        // "/espnow <MAC> <command>" sends a command and waits for the answer.
+        if (!extra) {
+            snprintf(result, result_len,
+                     "Error: use /espnow <MAC> <on|off|toggle|status>, /espnow ping or /espnow status");
+            return false;
+        }
+
+        uint8_t command = 0;
+        if (!espnow_command_from_text(extra, &command)) {
+            snprintf(result, result_len,
+                     "Error: unknown command '%s' (use on, off, toggle or status)", extra);
+            return false;
+        }
+
+        if (!espnow_is_ready()) {
+            snprintf(result, result_len, "Error: ESP-NOW is not ready yet");
+            return false;
+        }
+
+        uint8_t state = 0;
+        if (!espnow_send_command(token, command, &state, 0)) {
+            snprintf(result, result_len, "Error: no answer from %s", token);
+            return false;
+        }
+
+        snprintf(result, result_len, "%s is %s (state %u)",
+                 token, state ? "ON" : "OFF", state);
+        return true;
+    }
+
+    if (agent_is_command(message, "peripheral")) {
+        payload = agent_command_payload(message, "peripheral");
+        if (!payload || payload[0] == '\0' || strcmp(payload, "list") == 0) {
+            peripheral_report(result, result_len);
+            return true;
+        }
+
+        if (strlen(payload) >= sizeof(payload_buf)) {
+            snprintf(result, result_len, "Error: /peripheral arguments too long");
+            return false;
+        }
+
+        snprintf(payload_buf, sizeof(payload_buf), "%s", payload);
+        token = strtok(payload_buf, " \t\r\n");
+        extra = strtok(NULL, " \t\r\n");
+        if (!token) {
+            peripheral_report(result, result_len);
+            return true;
+        }
+
+        if (strcmp(token, "list") == 0) {
+            peripheral_report(result, result_len);
+            return true;
+        }
+
+        // "/peripheral input" reads the button and encoder events.
+        if (strcmp(token, "input") == 0) {
+            peripheral_input_msg_t msg;
+            int count = 0;
+            size_t offset = 0;
+            int written = snprintf(result, result_len, "Input events:");
+            if (written < 0) {
+                result[0] = '\0';
+                return false;
+            }
+            offset = (size_t)written < result_len ? (size_t)written : result_len - 1;
+
+            while (peripheral_input_pop(&msg) && offset < result_len) {
+                written = snprintf(result + offset, result_len - offset, " %s",
+                                   peripheral_input_event_name(msg.event));
+                if (written < 0 || (size_t)written >= result_len - offset) {
+                    break;
+                }
+                offset += (size_t)written;
+                count++;
+            }
+
+            if (count == 0) {
+                snprintf(result, result_len, "No input event since the last check");
+            }
+            return true;
+        }
+
+        // "/peripheral <type>" removes one peripheral.
+        if (!extra) {
+            peripheral_type_t type = PERIPHERAL_NONE;
+            if (!peripheral_type_from_name(token, &type)) {
+                snprintf(result, result_len,
+                         "Error: unknown peripheral '%s' (use list, input, button, "
+                         "encoder, analog, oled, lcd, led, mic or speaker)",
+                         token);
+                return false;
+            }
+
+            peripheral_stop(type);
+            peripheral_config_t config;
+            memset(&config, 0, sizeof(config));
+            config.pin_a = -1;
+            config.pin_b = -1;
+            config.pin_sw = -1;
+            config.pin_sda = -1;
+            config.pin_scl = -1;
+            config.pin_miso = -1;
+            config.pin_mosi = -1;
+            config.pin_dc = -1;
+            config.pin_cs = -1;
+            config.pin_clk = -1;
+            config.pin_rst = -1;
+            config.pin_ws = -1;
+            config.pin_din = -1;
+            config.pin_dout = -1;
+            config.pin_amp_bclk = -1;
+            config.pin_amp_lr = -1;
+            config.pin_amp_din = -1;
+            peripheral_set_config(type, &config);
+
+            snprintf(result, result_len, "The %s was removed", peripheral_type_name(type));
+            return true;
+        }
+
+        snprintf(result, result_len,
+                 "Error: use /peripheral list, /peripheral input or /peripheral <type>");
+        return false;
+    }
+
     snprintf(result, result_len, "Error: unknown local admin command");
     return false;
 }
@@ -594,6 +808,15 @@ void local_admin_perform_action(local_admin_action_t action)
     }
 
     esp_restart();
+#endif
+}
+
+esp_err_t local_admin_wifi_start_station(void)
+{
+#ifdef TEST_BUILD
+    return ESP_OK;
+#else
+    return ensure_wifi_started();
 #endif
 }
 

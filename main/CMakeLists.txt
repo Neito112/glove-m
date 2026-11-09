@@ -15,12 +15,22 @@ idf_component_register(
         "tools_gpio.c"
         "tools_i2c.c"
         "tools_dht.c"
+        "tools_espnow.c"
+        "espnow.c"
+        "tools_peripheral.c"
+        "peripheral.c"
+        "peripheral_input.c"
+        "peripheral_output.c"
+        "peripheral_display.c"
+        "peripheral_audio.c"
+        "peripheral_font.c"
         "tools_memory.c"
         "tools_persona.c"
         "tools_cron.c"
         "tools_system.c"
         "memory.c"
         "json_util.c"
+        "json_builder.c"
         "telegram.c"
         "telegram_http_diag.c"
         "telegram_poll_policy.c"
@@ -51,6 +61,10 @@ idf_component_register(
         lwip
         esp_driver_usb_serial_jtag
         app_update
+        esp_adc
+        esp_driver_i2s
+        esp_driver_spi
+        esp_lcd
 )
 
 set(ZCLAW_RELEASE_VERSION "dev")

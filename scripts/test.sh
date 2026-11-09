@@ -68,6 +68,8 @@ run_host_tests() {
         test_tools_system_diag.c \
         test_llm_auth.c \
         test_wifi_credentials.c \
+        test_peripheral.c \
+        test_tools_peripheral.c \
         test_runner.c \
         mock_esp.c \
         mock_memory.c \
@@ -78,6 +80,8 @@ run_host_tests() {
         mock_system_diag_deps.c \
         mock_ratelimit.c \
         mock_i2c.c \
+        mock_espnow.c \
+        mock_peripheral.c \
         ../../main/json_util.c \
         ../../main/cron_utils.c \
         ../../main/security.c \
@@ -101,6 +105,8 @@ run_host_tests() {
         ../../main/tools_i2c.c \
         ../../main/tools_dht.c \
         ../../main/tools_system.c \
+        ../../main/tools_peripheral.c \
+        ../../main/peripheral_font.c \
         $CJSON_LDFLAGS 2>&1 || {
         echo "Note: Failed to compile tests. Install cJSON:"
         echo "  macOS:  brew install cjson"

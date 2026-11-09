@@ -18,5 +18,8 @@ jobs:
           . "$IDF_PATH/export.sh"
           idf.py build
 
-      - name: Enforce 888 KiB binary budget
-        run: ./scripts/check-binary-size.sh --build-dir build --binary zclaw.bin --max-bytes 909312
+      - name: Enforce the binary budget
+        # The application slot is 1920 KiB after the peripheral drivers were
+        # added. The guard leaves a margin so a build never fills the slot
+        # completely.
+        run: ./scripts/check-binary-size.sh --build-dir build --binary zclaw.bin --max-bytes 1887436

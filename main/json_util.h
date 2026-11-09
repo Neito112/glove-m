@@ -18,9 +18,13 @@ typedef struct {
     char tool_name[32];             // Tool name (for tool_use)
 } conversation_msg_t;
 
-// Build the complete API request JSON
-// Returns allocated string (caller must free) or NULL on error
-char *json_build_request(
+// Build the complete API request JSON into a caller-provided buffer.
+// Returns the number of bytes written, or 0 on error. Writing the request by
+// hand avoids the large temporary heap allocation that cJSON_PrintUnformatted
+// needs, which does not fit on a device with a small heap.
+size_t json_build_request_into(
+    char *buf,
+    size_t buf_len,
     const char *system_prompt,
     const conversation_msg_t *history,
     int history_len,

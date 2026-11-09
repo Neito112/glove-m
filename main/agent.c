@@ -33,7 +33,7 @@ static int64_t s_last_start_response_us = 0;
 static int64_t s_last_non_command_response_us = 0;
 static char s_last_non_command_text[CHANNEL_RX_BUF_SIZE] = {0};
 static bool s_messages_paused = false;
-static char s_system_prompt_buf[2048];
+static char s_system_prompt_buf[3072];
 
 static agent_persona_t s_persona = AGENT_PERSONA_NEUTRAL;
 
@@ -48,6 +48,9 @@ static int s_history_len = 0;
 // Buffers (static to avoid stack overflow)
 static char s_response_buf[LLM_RESPONSE_BUF_SIZE];
 static char s_tool_result_buf[TOOL_RESULT_BUF_SIZE];
+// The request is written straight into this buffer. Building it with cJSON
+// needs three heap allocations at once, which does not fit on this device.
+static char s_request_buf[LLM_REQUEST_BUF_SIZE];
 
 typedef struct {
     int64_t started_us;
@@ -171,6 +174,10 @@ static void queue_telegram_response(const char *text, int64_t chat_id)
         ESP_LOGE(TAG, "Failed to send response to Telegram queue");
     }
 }
+
+// The agent runs in a single task, so the source of the message that is
+// being answered is kept here instead of being threaded through every call.
+static message_source_t s_reply_source = MSG_SOURCE_CHANNEL;
 
 static void send_response(const char *text, int64_t chat_id)
 {
@@ -367,7 +374,9 @@ static void handle_start_command(int64_t chat_id)
         "- /reboot\n"
         "- /wifi [status|scan]\n"
         "- /bootcount\n"
-        "- /factory-reset confirm";
+        "- /factory-reset confirm\n"
+        "- /espnow [status|ping|<MAC> <on|off|toggle|status>]\n"
+        "- /peripheral [list|input|<type>]";
     send_response(START_HELP_TEXT, chat_id);
 }
 
@@ -379,7 +388,7 @@ static void handle_settings_command(int64_t chat_id)
              "- Message intake: %s\n"
              "- Persona: %s\n"
              "- Chat commands: /start, /help, /settings, /stop, /resume\n"
-             "- USB local admin: /gpio, /diag, /reboot, /wifi, /bootcount, /factory-reset\n"
+             "- USB local admin: /gpio, /diag, /reboot, /wifi, /bootcount, /factory-reset, /espnow, /peripheral\n"
              "- /gpio supports reads and writes (e.g. /gpio 9 low)\n"
              "- Persona changes: ask in normal chat (handled via tool calls)\n"
              "- Device settings are global (e.g., timezone <name>)",
@@ -511,41 +520,8 @@ static void process_message(const char *user_message, message_source_t source, i
         rounds++;
         metrics.rounds = rounds;
 
-        // Build request JSON (user message already in history)
-        char *request = json_build_request(
-            agent_build_system_prompt(s_persona, s_system_prompt_buf, sizeof(s_system_prompt_buf)),
-            s_history,
-            s_history_len,
-            NULL,  // User message already in history
-            tools,
-            tool_count
-        );
-
-        if (!request) {
-            ESP_LOGE(TAG, "Failed to build request JSON");
-            history_rollback_to(history_turn_start, "request build failed");
-            send_response("Error: Failed to build request", reply_chat_id);
-            telegram_resume_polling();
-            telegram_polling_paused = false;
-            metrics_log_request(&metrics, "request_build_error");
-            return;
-        }
-
-        ESP_LOGI(TAG, "Request: %d bytes", (int)strlen(request));
-
-        // Check rate limit before making request
-        char rate_reason[128];
-        if (!ratelimit_check(rate_reason, sizeof(rate_reason))) {
-            free(request);
-            history_rollback_to(history_turn_start, "rate limited");
-            send_response(rate_reason, reply_chat_id);
-            telegram_resume_polling();
-            telegram_polling_paused = false;
-            metrics_log_request(&metrics, "rate_limited");
-            return;
-        }
-
-        // Send to LLM with retry
+        // Send to LLM with retry. The request is rebuilt whenever the model
+        // changes, because the model name is part of the request body.
         esp_err_t err = ESP_FAIL;
         int retry_delay_ms = LLM_RETRY_BASE_MS;
         int64_t retry_window_started_us = esp_timer_get_time();
@@ -559,12 +535,60 @@ static void process_message(const char *user_message, message_source_t source, i
                 break;
             }
 
+            // Build the request for the model that is active right now.
+            size_t request_len = json_build_request_into(
+                s_request_buf,
+                sizeof(s_request_buf),
+                agent_build_system_prompt(s_persona, s_system_prompt_buf, sizeof(s_system_prompt_buf)),
+                s_history,
+                s_history_len,
+                NULL,  // User message already in history
+                tools,
+                tool_count
+            );
+
+            if (request_len == 0) {
+                ESP_LOGE(TAG, "Failed to build request JSON");
+                history_rollback_to(history_turn_start, "request build failed");
+                send_response("Error: Failed to build request", reply_chat_id);
+                telegram_resume_polling();
+                telegram_polling_paused = false;
+                metrics_log_request(&metrics, "request_build_error");
+                return;
+            }
+
+            ESP_LOGI(TAG, "Request: %u bytes", (unsigned)request_len);
+
+            // Check rate limit before making request
+            char rate_reason[128];
+            if (!ratelimit_check(rate_reason, sizeof(rate_reason))) {
+                history_rollback_to(history_turn_start, "rate limited");
+                send_response(rate_reason, reply_chat_id);
+                telegram_resume_polling();
+                telegram_polling_paused = false;
+                metrics_log_request(&metrics, "rate_limited");
+                return;
+            }
+
             int64_t llm_started_us = esp_timer_get_time();
-            err = llm_request(request, s_response_buf, sizeof(s_response_buf));
+            err = llm_request(s_request_buf, s_response_buf, sizeof(s_response_buf));
+            uint32_t llm_elapsed_ms = us_to_ms_u32(elapsed_us_since(llm_started_us));
             metrics.llm_us_total += elapsed_us_since(llm_started_us);
             metrics.llm_calls++;
             if (err == ESP_OK) {
+                if (!llm_model_report_success(llm_elapsed_ms)) {
+                    // The model answered, but too slowly. Rotate so the next
+                    // turn uses a faster one.
+                    if (llm_model_has_alternative()) {
+                        llm_model_rotate();
+                    }
+                }
                 break;
+            }
+
+            if (llm_model_report_failure() && llm_model_has_alternative()) {
+                ESP_LOGW(TAG, "Rotating to another model after a failure");
+                llm_model_rotate();
             }
 
             if (retry == LLM_MAX_RETRIES - 1) {
@@ -603,8 +627,6 @@ static void process_message(const char *user_message, message_source_t source, i
                 retry_delay_ms = LLM_RETRY_MAX_MS;
             }
         }
-
-        free(request);
 
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "LLM request failed after %d retries", LLM_MAX_RETRIES);
@@ -737,6 +759,7 @@ void agent_test_reset(void)
     memset(s_tool_result_buf, 0, sizeof(s_tool_result_buf));
     s_channel_output_queue = NULL;
     s_telegram_output_queue = NULL;
+    s_reply_source = MSG_SOURCE_CHANNEL;
     s_last_start_response_us = 0;
     s_last_non_command_response_us = 0;
     memset(s_last_non_command_text, 0, sizeof(s_last_non_command_text));
@@ -774,6 +797,9 @@ static void agent_task(void *arg)
 
     while (1) {
         if (xQueueReceive(s_input_queue, &msg, portMAX_DELAY) == pdTRUE) {
+            // Remember the origin so the answer goes back to the same chat.
+            s_reply_source = msg.source;
+
             process_message(msg.text, msg.source, response_chat_id_for_source(msg.source, msg.chat_id));
         }
     }

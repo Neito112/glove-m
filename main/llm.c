@@ -30,7 +30,17 @@ static const char *TAG = "llm";
 static llm_backend_t s_backend = LLM_BACKEND_OPENAI;
 static char s_api_key[LLM_API_KEY_BUF_SIZE] = {0};
 static char s_model[64] = {0};
+// The model as configured in NVS. It stays the first entry of the rotation
+// even when the active model has moved on to a fallback.
+static char s_configured_model[64] = {0};
 static char s_api_url_override[192] = {0};
+
+// Model rotation state. The configured model is index 0 and the fallbacks
+// follow it.
+static uint32_t s_dropped_mask = 0;
+static int s_consecutive_failures = 0;
+static int s_rotation_index = 0;
+static bool s_rotation_active = false;
 
 static bool llm_backend_requires_api_key(llm_backend_t backend)
 {
@@ -491,6 +501,14 @@ esp_err_t llm_init(void)
         strncpy(s_model, llm_get_default_model(), sizeof(s_model) - 1);
         s_model[sizeof(s_model) - 1] = '\0';
     }
+    strncpy(s_configured_model, s_model, sizeof(s_configured_model) - 1);
+    s_configured_model[sizeof(s_configured_model) - 1] = '\0';
+
+    // Start the rotation on the configured model.
+    s_dropped_mask = 0;
+    s_consecutive_failures = 0;
+    s_rotation_index = 0;
+    s_rotation_active = false;
 
     s_api_url_override[0] = '\0';
     memory_get(NVS_KEY_LLM_API_URL, s_api_url_override, sizeof(s_api_url_override));
@@ -575,6 +593,171 @@ bool llm_is_openai_format(void)
     return s_backend == LLM_BACKEND_OPENAI ||
            s_backend == LLM_BACKEND_OPENROUTER ||
            s_backend == LLM_BACKEND_OLLAMA;
+}
+
+bool llm_model_is_free(void)
+{
+    if (s_backend != LLM_BACKEND_OPENROUTER) {
+        return false;
+    }
+    const char *model = llm_get_model();
+    if (strcmp(model, LLM_OPENROUTER_FREE_ROUTER_MODEL) == 0) {
+        return true;
+    }
+    size_t len = strlen(model);
+    size_t suffix_len = strlen(":free");
+    return len > suffix_len && strcmp(model + len - suffix_len, ":free") == 0;
+}
+
+// -----------------------------------------------------------------------------
+// Model health tracking
+//
+// The configured model is tried first. When it fails repeatedly or answers too
+// slowly, the next model in the rotation takes over. For OpenRouter the
+// rotation only contains zero-cost models, so the device never spends credits.
+// -----------------------------------------------------------------------------
+
+// Zero-cost models used when the configured OpenRouter model is unusable.
+// Ordered by measured tool-calling reliability and latency.
+static const char *const s_openrouter_fallbacks[] = {
+    "cohere/north-mini-code:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "recursive/flint-v1.0:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+};
+
+#define OPENROUTER_FALLBACK_COUNT \
+    (sizeof(s_openrouter_fallbacks) / sizeof(s_openrouter_fallbacks[0]))
+
+// Models currently dropped from the rotation, as a bitmask over the fallback
+// list. The configured model is index 0.
+
+static bool model_is_dropped(int index)
+{
+    if (index == 0) {
+        return (s_dropped_mask & 1u) != 0;
+    }
+    return (s_dropped_mask & (1u << index)) != 0;
+}
+
+static void model_drop(int index)
+{
+    if (index == 0) {
+        s_dropped_mask |= 1u;
+    } else if (index < 32) {
+        s_dropped_mask |= (1u << index);
+    }
+}
+
+// Total number of models in the rotation for the current backend.
+static int rotation_size(void)
+{
+    if (s_backend == LLM_BACKEND_OPENROUTER) {
+        return 1 + (int)OPENROUTER_FALLBACK_COUNT;
+    }
+    return 1;
+}
+
+// Model name for a rotation index, or NULL when the index is out of range.
+static const char *rotation_model(int index)
+{
+    if (index == 0) {
+        return s_configured_model;
+    }
+    if (s_backend == LLM_BACKEND_OPENROUTER && index <= (int)OPENROUTER_FALLBACK_COUNT) {
+        return s_openrouter_fallbacks[index - 1];
+    }
+    return NULL;
+}
+
+// Switch the active model to the given rotation index.
+static bool rotation_select(int index)
+{
+    const char *name = rotation_model(index);
+    if (!name) {
+        return false;
+    }
+    strncpy(s_model, name, sizeof(s_model) - 1);
+    s_model[sizeof(s_model) - 1] = '\0';
+    s_rotation_index = index;
+    s_consecutive_failures = 0;
+    ESP_LOGW(TAG, "Switched to model '%s'", s_model);
+    return true;
+}
+
+bool llm_model_report_success(uint32_t elapsed_ms)
+{
+    s_consecutive_failures = 0;
+
+    if (elapsed_ms > LLM_MODEL_SLOW_MS) {
+        model_drop(s_rotation_index);
+        ESP_LOGW(TAG, "Model '%s' answered in %ums (over %ums), dropping it",
+                 s_model, (int)elapsed_ms, (int)LLM_MODEL_SLOW_MS);
+        return false;
+    }
+
+    return true;
+}
+
+bool llm_model_report_failure(void)
+{
+    s_consecutive_failures++;
+    if (s_consecutive_failures < LLM_MODEL_MAX_FAILURES) {
+        return false;
+    }
+
+    model_drop(s_rotation_index);
+    s_consecutive_failures = 0;
+    ESP_LOGW(TAG, "Model '%s' failed %d times, dropping it", s_model, LLM_MODEL_MAX_FAILURES);
+    return true;
+}
+
+bool llm_model_rotate(void)
+{
+    if (!s_rotation_active) {
+        s_rotation_active = true;
+        s_rotation_index = 0;
+    }
+
+    int size = rotation_size();
+    for (int i = 1; i < size; i++) {
+        int next = (s_rotation_index + i) % size;
+        if (model_is_dropped(next)) {
+            continue;
+        }
+        return rotation_select(next);
+    }
+
+    // Every model was dropped. Reset the rotation and retry the configured
+    // one, so a transient outage does not brick the device.
+    ESP_LOGW(TAG, "All models dropped, resetting the rotation");
+    s_dropped_mask = 0;
+    s_consecutive_failures = 0;
+    s_rotation_index = 0;
+    return rotation_select(0);
+}
+
+bool llm_model_has_alternative(void)
+{
+    int size = rotation_size();
+    for (int i = 0; i < size; i++) {
+        if (i != s_rotation_index && !model_is_dropped(i)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int llm_model_available_count(void)
+{
+    int size = rotation_size();
+    int count = 0;
+    for (int i = 0; i < size; i++) {
+        if (!model_is_dropped(i)) {
+            count++;
+        }
+    }
+    return count;
 }
 
 #ifdef CONFIG_ZCLAW_STUB_LLM

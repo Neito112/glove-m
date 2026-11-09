@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // Buffer Sizes
 // -----------------------------------------------------------------------------
-#define LLM_REQUEST_BUF_SIZE    12288   // 12KB for outgoing JSON
+#define LLM_REQUEST_BUF_SIZE    20480   // 20KB for outgoing JSON
 #define LLM_RESPONSE_BUF_SIZE   16384   // 16KB for incoming JSON
 #define CHANNEL_RX_BUF_SIZE     512     // Input line buffer
 #define CHANNEL_TX_BUF_SIZE     1024    // Output response buffer for serial/web relay
@@ -57,8 +57,24 @@ typedef enum {
 
 #define LLM_DEFAULT_MODEL_ANTHROPIC   "claude-sonnet-4-6"
 #define LLM_DEFAULT_MODEL_OPENAI      "gpt-5.4"
-#define LLM_DEFAULT_MODEL_OPENROUTER  "openrouter/auto"
+// "openrouter/free" routes to a zero-cost model. The plain "openrouter/auto"
+// router may pick a paid model, so it is not the default here.
+#define LLM_DEFAULT_MODEL_OPENROUTER  "openrouter/free"
 #define LLM_DEFAULT_MODEL_OLLAMA      "qwen3:8b"
+
+// Free-only OpenRouter fallbacks live in json_util.c. Every entry is a
+// zero-cost model, so the router never spends credits even when the primary
+// model is unavailable.
+#define LLM_OPENROUTER_FREE_ROUTER_MODEL "openrouter/free"
+
+// A model that answers slower than this is dropped from the rotation. The
+// HTTP client timeout is 20s, so this sits just below the point where the
+// request would fail anyway. The threshold is generous because a single slow
+// round-trip should not retire a model that is otherwise reliable.
+#define LLM_MODEL_SLOW_MS             18000
+
+// Consecutive failures before a model is dropped from the rotation.
+#define LLM_MODEL_MAX_FAILURES        2
 
 #define LLM_API_KEY_MAX_LEN       511
 #define LLM_API_KEY_BUF_SIZE      (LLM_API_KEY_MAX_LEN + 1)
@@ -84,7 +100,36 @@ typedef enum {
     "Use persona tools only when the user explicitly asks to view, set, or reset persona. " \
     "Do not change persona from casual wording. " \
     "When asked what is saved or set on the device, verify with tools. " \
-    "When a custom tool returns an action, carry it out with built-in tools."
+    "When a custom tool returns an action, carry it out with built-in tools. " \
+    "When the user describes wiring a button, a rotary encoder, an analog sensor, " \
+    "an OLED or LCD display, a microphone or a speaker, call peripheral_setup " \
+    "with the matching type and the pin fields, then confirm in one short sentence. " \
+    "Ask for the missing pin numbers instead of guessing them. " \
+    "The wiring is stored, so it survives a restart. " \
+    "Plain LEDs and relays need no setup: use gpio_write with the pin and 0 or 1, " \
+    "and delay to time them. " \
+    "For a display use peripheral_setup then peripheral_display to write text. " \
+    "For a button or encoder use peripheral_setup then peripheral_input to read events. " \
+    "For an analog sensor use peripheral_setup then peripheral_analog_read. " \
+    "For a DHT11 or DHT22 use dht_read. " \
+    "For any other I2C sensor use i2c_scan to find the address, " \
+    "then i2c_write_read to talk to it. " \
+    "For a speaker use peripheral_setup then peripheral_speaker to play a tone. " \
+    "For a microphone use peripheral_setup then peripheral_mic_read for the level. " \
+    "To reach another ESP-NOW device use espnow_send, espnow_ping, or espnow_list_peers."
+
+// -----------------------------------------------------------------------------
+// Device identity
+// -----------------------------------------------------------------------------
+// The friendly name of this device. It is reported to the peers on the
+// ESP-NOW channel and shown in the local console and the version tool.
+#ifdef CONFIG_ZCLAW_DEVICE_NAME
+#define DEVICE_NAME             CONFIG_ZCLAW_DEVICE_NAME
+#else
+#define DEVICE_NAME             "Glove-M"
+#endif
+
+#define DEVICE_NAME_MAX_LEN     31
 
 // -----------------------------------------------------------------------------
 // GPIO tool safety range (configurable via Kconfig)

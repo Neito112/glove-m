@@ -1,5 +1,13 @@
 menu "zclaw Configuration"
 
+    config ZCLAW_DEVICE_NAME
+        string "Device name"
+        default "Glove-M"
+        help
+            Friendly name of this device. It is shown in the local console,
+            reported by the get_version tool, and announced to the peers on
+            the ESP-NOW channel so the other boards can address it by name.
+
     config ZCLAW_WIFI_SSID
         string "WiFi SSID (for testing only)"
         default ""

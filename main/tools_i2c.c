@@ -1,7 +1,7 @@
 #include "tools_handlers.h"
 #include "tools_common.h"
 #include "gpio_policy.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include <ctype.h>
@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+// The I2C tools use the new I2C master driver. The legacy driver cannot
+// run next to it, and the display driver already pulls in the new one.
 #define I2C_TOOL_PORT                I2C_NUM_0
 #define I2C_ADDR_FIRST               0x03
 #define I2C_ADDR_LAST                0x77
@@ -189,34 +191,49 @@ static bool parse_bus_pins(const cJSON *input, int *sda_pin, int *scl_pin, char 
     return true;
 }
 
-static bool init_i2c_master(int sda_pin, int scl_pin, int frequency_hz, char *result, size_t result_len)
+// The bus and the device are created for one transfer and released right
+// after it, so the tool never blocks the display driver or another tool.
+static bool init_i2c_master(int sda_pin,
+                             int scl_pin,
+                             int frequency_hz,
+                             i2c_master_bus_handle_t *bus_out,
+                             char *result,
+                             size_t result_len)
 {
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
+    // The bus is created with the default clock source, the speed belongs to
+    // the device that is added to the bus later.
+    (void)frequency_hz;
+
+    i2c_master_bus_config_t bus_config = {
+        .i2c_port = I2C_TOOL_PORT,
         .sda_io_num = sda_pin,
         .scl_io_num = scl_pin,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = frequency_hz,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
-    esp_err_t err;
 
-    // Clear any previous configuration on this port so calls are repeatable.
-    i2c_driver_delete(I2C_TOOL_PORT);
-
-    err = i2c_param_config(I2C_TOOL_PORT, &conf);
+    esp_err_t err = i2c_new_master_bus(&bus_config, bus_out);
     if (err != ESP_OK) {
-        snprintf(result, result_len, "Error: i2c_param_config failed (%s)", esp_err_to_name(err));
-        return false;
-    }
-
-    err = i2c_driver_install(I2C_TOOL_PORT, I2C_MODE_MASTER, 0, 0, 0);
-    if (err != ESP_OK) {
-        snprintf(result, result_len, "Error: i2c_driver_install failed (%s)", esp_err_to_name(err));
+        snprintf(result, result_len, "Error: i2c_new_master_bus failed (%s)", esp_err_to_name(err));
         return false;
     }
 
     return true;
+}
+
+static esp_err_t add_device(i2c_master_bus_handle_t bus,
+                             uint8_t address,
+                             int frequency_hz,
+                             i2c_master_dev_handle_t *dev_out)
+{
+    i2c_device_config_t dev_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = address,
+        .scl_speed_hz = (uint32_t)frequency_hz,
+    };
+
+    return i2c_master_bus_add_device(bus, &dev_config, dev_out);
 }
 
 static const char *i2c_mode_name(i2c_tool_mode_t mode)
@@ -232,9 +249,9 @@ static const char *i2c_mode_name(i2c_tool_mode_t mode)
 }
 
 static bool execute_i2c_transfer(const cJSON *input,
-                                 i2c_tool_mode_t mode,
-                                 char *result,
-                                 size_t result_len)
+                                  i2c_tool_mode_t mode,
+                                  char *result,
+                                  size_t result_len)
 {
     uint8_t address = 0;
     uint8_t write_buffer[I2C_MAX_DATA_BYTES];
@@ -245,6 +262,8 @@ static bool execute_i2c_transfer(const cJSON *input,
     int sda_pin;
     int scl_pin;
     int frequency_hz = I2C_DEFAULT_FREQ_HZ;
+    i2c_master_bus_handle_t bus = NULL;
+    i2c_master_dev_handle_t dev = NULL;
     esp_err_t err;
 
     if (!parse_bus_pins(input, &sda_pin, &scl_pin, result, result_len) ||
@@ -266,44 +285,37 @@ static bool execute_i2c_transfer(const cJSON *input,
         !parse_read_length(input, &read_len, result, result_len)) {
         return false;
     }
-    if (!init_i2c_master(sda_pin, scl_pin, frequency_hz, result, result_len)) {
+    if (!init_i2c_master(sda_pin, scl_pin, frequency_hz, &bus, result, result_len)) {
+        return false;
+    }
+
+    err = add_device(bus, address, frequency_hz, &dev);
+    if (err != ESP_OK) {
+        i2c_del_master_bus(bus);
+        snprintf(result, result_len, "Error: failed to add the I2C device (%s)",
+                 esp_err_to_name(err));
         return false;
     }
 
     memset(read_buffer, 0, sizeof(read_buffer));
     switch (mode) {
         case I2C_TOOL_WRITE:
-            err = i2c_master_write_to_device(
-                I2C_TOOL_PORT,
-                address,
-                write_buffer,
-                write_len,
-                pdMS_TO_TICKS(I2C_IO_TIMEOUT_MS)
-            );
+            err = i2c_master_transmit(dev, write_buffer, write_len, I2C_IO_TIMEOUT_MS);
             break;
         case I2C_TOOL_READ:
-            err = i2c_master_read_from_device(
-                I2C_TOOL_PORT,
-                address,
-                read_buffer,
-                read_len,
-                pdMS_TO_TICKS(I2C_IO_TIMEOUT_MS)
-            );
+            err = i2c_master_receive(dev, read_buffer, read_len, I2C_IO_TIMEOUT_MS);
             break;
         default:
-            err = i2c_master_write_read_device(
-                I2C_TOOL_PORT,
-                address,
-                write_buffer,
-                write_len,
-                read_buffer,
-                read_len,
-                pdMS_TO_TICKS(I2C_IO_TIMEOUT_MS)
-            );
+            err = i2c_master_transmit_receive(dev,
+                                              write_buffer,
+                                              write_len,
+                                              read_buffer,
+                                              read_len,
+                                              I2C_IO_TIMEOUT_MS);
             break;
     }
 
-    i2c_driver_delete(I2C_TOOL_PORT);
+    i2c_del_master_bus(bus);
     if (err != ESP_OK) {
         snprintf(result, result_len, "Error: %s failed (%s)", i2c_mode_name(mode), esp_err_to_name(err));
         return false;
@@ -337,45 +349,28 @@ bool tools_i2c_scan_handler(const cJSON *input, char *result, size_t result_len)
     int sda_pin;
     int scl_pin;
     int frequency_hz = I2C_DEFAULT_FREQ_HZ;
+    i2c_master_bus_handle_t bus = NULL;
 
     if (!parse_bus_pins(input, &sda_pin, &scl_pin, result, result_len) ||
         !parse_frequency(input, &frequency_hz, result, result_len)) {
         return false;
     }
 
-    if (!init_i2c_master(sda_pin, scl_pin, frequency_hz, result, result_len)) {
+    if (!init_i2c_master(sda_pin, scl_pin, frequency_hz, &bus, result, result_len)) {
         return false;
     }
 
     uint8_t found_addresses[I2C_ADDR_LAST - I2C_ADDR_FIRST + 1];
     int found_count = 0;
-    esp_err_t err;
 
     for (int addr = I2C_ADDR_FIRST; addr <= I2C_ADDR_LAST; addr++) {
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        if (!cmd) {
-            i2c_driver_delete(I2C_TOOL_PORT);
-            snprintf(result, result_len, "Error: out of memory during I2C scan");
-            return false;
-        }
-
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_stop(cmd);
-
-        err = i2c_master_cmd_begin(
-            I2C_TOOL_PORT,
-            cmd,
-            pdMS_TO_TICKS(I2C_ADDR_TIMEOUT_MS)
-        );
-        i2c_cmd_link_delete(cmd);
-
+        esp_err_t err = i2c_master_probe(bus, (uint16_t)addr, I2C_ADDR_TIMEOUT_MS);
         if (err == ESP_OK && found_count < (int)(sizeof(found_addresses))) {
             found_addresses[found_count++] = (uint8_t)addr;
         }
     }
 
-    i2c_driver_delete(I2C_TOOL_PORT);
+    i2c_del_master_bus(bus);
 
     if (found_count == 0) {
         snprintf(

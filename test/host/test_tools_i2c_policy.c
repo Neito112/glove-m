@@ -7,7 +7,7 @@
 
 #include <cjson/cJSON.h>
 
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "tools_handlers.h"
 
 #define TEST(name) static int test_##name(void)
@@ -16,13 +16,13 @@
         printf("  FAIL: %s (line %d)\n", #cond, __LINE__); \
         return 1; \
     } \
-} while (0)
+} while(0)
 #define ASSERT_STR_CONTAINS(haystack, needle) do { \
     if (strstr((haystack), (needle)) == NULL) { \
         printf("  FAIL: expected substring '%s' in '%s' (line %d)\n", (needle), (haystack), __LINE__); \
         return 1; \
     } \
-} while (0)
+} while(0)
 
 bool tools_i2c_test_pin_is_allowed_for_esp32_target(int pin, const char *csv, int min_pin, int max_pin);
 
@@ -45,8 +45,7 @@ TEST(rejects_disallowed_pin_before_i2c_init)
 
     ASSERT(!tools_i2c_scan_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "SDA pin");
-    ASSERT(i2c_test_get_param_config_calls() == 0);
-    ASSERT(i2c_test_get_driver_install_calls() == 0);
+    ASSERT(i2c_test_get_bus_created() == 0);
 
     cJSON_Delete(input);
     return 0;
@@ -59,13 +58,31 @@ TEST(valid_scan_path_initializes_i2c_and_returns_no_devices)
 
     ASSERT(input != NULL);
     i2c_test_reset();
-    i2c_test_set_cmd_begin_result(ESP_FAIL);
+    i2c_test_set_probe_result(ESP_FAIL);
 
     ASSERT(tools_i2c_scan_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "No I2C devices on");
-    ASSERT(i2c_test_get_param_config_calls() == 1);
-    ASSERT(i2c_test_get_driver_install_calls() == 1);
-    ASSERT(i2c_test_get_driver_delete_calls() >= 2);
+    ASSERT(i2c_test_get_bus_created() == 1);
+    ASSERT(i2c_test_get_bus_deleted() == 1);
+
+    cJSON_Delete(input);
+    return 0;
+}
+
+TEST(scan_reports_the_devices_that_answer)
+{
+    cJSON *input = cJSON_Parse("{\"sda_pin\":4,\"scl_pin\":5}");
+    // Every address of the 7 bit range answers in the mock, so the report
+    // needs room for all of them.
+    char result[1024] = {0};
+
+    ASSERT(input != NULL);
+    i2c_test_reset();
+    i2c_test_set_probe_result(ESP_OK);
+
+    ASSERT(tools_i2c_scan_handler(input, result, sizeof(result)));
+    ASSERT_STR_CONTAINS(result, "0x03");
+    ASSERT_STR_CONTAINS(result, "0x77");
 
     cJSON_Delete(input);
     return 0;
@@ -78,7 +95,7 @@ TEST(write_parses_hex_payload_and_records_device_write)
 
     ASSERT(input != NULL);
     i2c_test_reset();
-    i2c_test_set_write_to_device_result(ESP_OK);
+    i2c_test_set_transmit_result(ESP_OK);
 
     ASSERT(tools_i2c_write_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "wrote 2 byte(s)");
@@ -100,7 +117,7 @@ TEST(read_returns_hex_payload_from_mock)
     ASSERT(input != NULL);
     i2c_test_reset();
     i2c_test_set_read_data(read_data, sizeof(read_data));
-    i2c_test_set_read_from_device_result(ESP_OK);
+    i2c_test_set_receive_result(ESP_OK);
 
     ASSERT(tools_i2c_read_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "read 3 byte(s)");
@@ -121,7 +138,7 @@ TEST(write_read_combines_register_write_and_readback)
     ASSERT(input != NULL);
     i2c_test_reset();
     i2c_test_set_read_data(read_data, sizeof(read_data));
-    i2c_test_set_write_read_device_result(ESP_OK);
+    i2c_test_set_transmit_receive_result(ESP_OK);
 
     ASSERT(tools_i2c_write_read_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "after writing 1 byte(s)");
@@ -145,8 +162,7 @@ TEST(rejects_malformed_hex_payload_before_i2c_init)
 
     ASSERT(!tools_i2c_write_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "hex bytes");
-    ASSERT(i2c_test_get_param_config_calls() == 0);
-    ASSERT(i2c_test_get_driver_install_calls() == 0);
+    ASSERT(i2c_test_get_bus_created() == 0);
 
     cJSON_Delete(input);
     return 0;
@@ -162,8 +178,7 @@ TEST(rejects_out_of_range_address_before_i2c_init)
 
     ASSERT(!tools_i2c_read_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "address must be");
-    ASSERT(i2c_test_get_param_config_calls() == 0);
-    ASSERT(i2c_test_get_driver_install_calls() == 0);
+    ASSERT(i2c_test_get_bus_created() == 0);
 
     cJSON_Delete(input);
     return 0;
@@ -179,8 +194,23 @@ TEST(rejects_out_of_range_read_length_before_i2c_init)
 
     ASSERT(!tools_i2c_read_handler(input, result, sizeof(result)));
     ASSERT_STR_CONTAINS(result, "read_length must be 1-64");
-    ASSERT(i2c_test_get_param_config_calls() == 0);
-    ASSERT(i2c_test_get_driver_install_calls() == 0);
+    ASSERT(i2c_test_get_bus_created() == 0);
+
+    cJSON_Delete(input);
+    return 0;
+}
+
+TEST(every_transfer_releases_the_bus)
+{
+    cJSON *input = cJSON_Parse("{\"sda_pin\":4,\"scl_pin\":5,\"address\":118,\"data_hex\":\"0x10\"}");
+    char result[256] = {0};
+
+    ASSERT(input != NULL);
+    i2c_test_reset();
+    i2c_test_set_transmit_result(ESP_OK);
+
+    ASSERT(tools_i2c_write_handler(input, result, sizeof(result)));
+    ASSERT(i2c_test_get_bus_created() == i2c_test_get_bus_deleted());
 
     cJSON_Delete(input);
     return 0;
@@ -208,6 +238,13 @@ int test_tools_i2c_policy_all(void)
 
     printf("  valid_scan_path_initializes_i2c_and_returns_no_devices... ");
     if (test_valid_scan_path_initializes_i2c_and_returns_no_devices() == 0) {
+        printf("OK\n");
+    } else {
+        failures++;
+    }
+
+    printf("  scan_reports_the_devices_that_answer... ");
+    if (test_scan_reports_the_devices_that_answer() == 0) {
         printf("OK\n");
     } else {
         failures++;
@@ -250,6 +287,13 @@ int test_tools_i2c_policy_all(void)
 
     printf("  rejects_out_of_range_read_length_before_i2c_init... ");
     if (test_rejects_out_of_range_read_length_before_i2c_init() == 0) {
+        printf("OK\n");
+    } else {
+        failures++;
+    }
+
+    printf("  every_transfer_releases_the_bus... ");
+    if (test_every_transfer_releases_the_bus() == 0) {
         printf("OK\n");
     } else {
         failures++;

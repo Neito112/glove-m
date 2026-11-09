@@ -22,6 +22,21 @@ bool tools_i2c_read_handler(const cJSON *input, char *result, size_t result_len)
 bool tools_i2c_write_read_handler(const cJSON *input, char *result, size_t result_len);
 bool tools_dht_read_handler(const cJSON *input, char *result, size_t result_len);
 
+// ESP-NOW
+bool tools_espnow_send_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_espnow_ping_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_espnow_list_peers_handler(const cJSON *input, char *result, size_t result_len);
+
+// Peripherals
+bool tools_peripheral_setup_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_list_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_remove_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_input_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_display_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_analog_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_speaker_handler(const cJSON *input, char *result, size_t result_len);
+bool tools_peripheral_mic_handler(const cJSON *input, char *result, size_t result_len);
+
 // Memory
 bool tools_memory_set_handler(const cJSON *input, char *result, size_t result_len);
 bool tools_memory_get_handler(const cJSON *input, char *result, size_t result_len);

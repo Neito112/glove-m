@@ -23,6 +23,11 @@ void local_admin_perform_action(local_admin_action_t action);
 
 bool local_admin_wifi_connect_from_store(void);
 
+// Bring the Wi-Fi radio up in station mode without joining an access point.
+// The ESP-NOW link and the peripherals work on the radio alone, so they do
+// not need a provisioned network.
+esp_err_t local_admin_wifi_start_station(void);
+
 #ifdef TEST_BUILD
 void local_admin_test_reset(void);
 void local_admin_test_set_wifi_status(const char *status_text);

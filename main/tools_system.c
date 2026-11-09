@@ -227,7 +227,7 @@ static bool parse_diagnostics_args(const cJSON *input,
 bool tools_get_version_handler(const cJSON *input, char *result, size_t result_len)
 {
     (void)input;
-    snprintf(result, result_len, "zclaw v%s", ota_get_version());
+    snprintf(result, result_len, "%s, zclaw v%s", DEVICE_NAME, ota_get_version());
     return true;
 }
 

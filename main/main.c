@@ -14,6 +14,8 @@
 #include "nvs_keys.h"
 #include "messages.h"
 #include "gpio_policy.h"
+#include "espnow.h"
+#include "peripheral.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -128,6 +130,7 @@ void app_main(void)
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  zclaw v%s", ota_get_version());
+    ESP_LOGI(TAG, "  Device: %s", DEVICE_NAME);
     ESP_LOGI(TAG, "  AI Agent on ESP32");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "");
@@ -253,6 +256,13 @@ void app_main(void)
 
     // 9. Check if configured or in safe mode
     if (!device_configured || s_safe_mode) {
+        // The radio is still needed for the ESP-NOW link and for the
+        // peripherals, so it comes up even without a network.
+        if (local_admin_wifi_start_station() == ESP_OK) {
+            espnow_start();
+            peripheral_start_all();
+        }
+
         if (s_safe_mode) {
             ESP_LOGE(TAG, "");
             ESP_LOGE(TAG, "========================================");
@@ -265,11 +275,11 @@ void app_main(void)
             ESP_LOGE(TAG, "  2) Reflash firmware and reprovision");
             ESP_LOGE(TAG, "");
             channel_write("\r\nSAFE MODE - local serial commands remain available.\r\n"
-                          "Try /gpio, /diag, /reboot, /wifi, /bootcount, /factory-reset, /help, or /settings.\r\n\r\n");
+                          "Try /gpio, /diag, /reboot, /wifi, /bootcount, /factory-reset, /espnow, /peripheral, /help, or /settings.\r\n\r\n");
         } else {
             print_provisioning_help();
             channel_write("\r\nDevice is not provisioned.\r\n"
-                          "Local serial commands remain available: /gpio, /diag, /reboot, /wifi, /bootcount, /factory-reset, /help, /settings.\r\n\r\n");
+                          "Local serial commands remain available: /gpio, /diag, /reboot, /wifi, /bootcount, /factory-reset, /espnow, /peripheral, /help, /settings.\r\n\r\n");
         }
         while (1) {
             vTaskDelay(pdMS_TO_TICKS(5000));
@@ -304,6 +314,19 @@ void app_main(void)
     if (startup_err != ESP_OK) {
         fail_fast_startup("cron_start", startup_err);
     }
+
+    // 15. Bring up the two-way ESP-NOW link. The Wi-Fi radio is running by
+    //     now, so the peers in the same room can be reached directly.
+    if (!espnow_start()) {
+        // The radio may not have been up yet, so the link is retried once
+        // the station mode is running.
+        local_admin_wifi_start_station();
+        espnow_start();
+    }
+
+    // 15b. Bring up the peripherals the user configured over a chat. The
+    //      wiring is stored in NVS, so it comes back on every boot.
+    peripheral_start_all();
 
     // 15. Print ready message
     ESP_LOGI(TAG, "");

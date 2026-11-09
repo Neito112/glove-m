@@ -95,6 +95,17 @@ TEST(required_core_tools_exist)
         "create_tool",
         "list_user_tools",
         "delete_user_tool",
+        "peripheral_setup",
+        "peripheral_list",
+        "peripheral_remove",
+        "peripheral_input",
+        "peripheral_display",
+        "peripheral_analog_read",
+        "peripheral_speaker",
+        "peripheral_mic_read",
+        "espnow_send",
+        "espnow_ping",
+        "espnow_list_peers",
         NULL
     };
     int i;

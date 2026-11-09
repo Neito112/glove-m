@@ -132,3 +132,34 @@ bool llm_is_openai_format(void)
            s_backend == LLM_BACKEND_OPENROUTER ||
            s_backend == LLM_BACKEND_OLLAMA;
 }
+
+bool llm_model_is_free(void)
+{
+    return false;
+}
+
+bool llm_model_report_success(uint32_t elapsed_ms)
+{
+    (void)elapsed_ms;
+    return true;
+}
+
+bool llm_model_report_failure(void)
+{
+    return false;
+}
+
+bool llm_model_rotate(void)
+{
+    return false;
+}
+
+bool llm_model_has_alternative(void)
+{
+    return false;
+}
+
+int llm_model_available_count(void)
+{
+    return 1;
+}

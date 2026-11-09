@@ -1,9 +1,14 @@
 # Name,   Type, SubType, Offset,  Size,   Flags
 # OTA-capable partition table for 4MB flash
 # nvs_key partition required for NVS encryption (when flash encryption enabled)
+#
+# The application grew past the original 1.5 MB slot once the peripheral
+# drivers were added, so both OTA slots were widened to 1.875 MB. That leaves
+# a small partition at the end for future use.
 nvs,      data, nvs,     0x9000,  0x4000,
 nvs_key,  data, nvs_keys,0xd000,  0x1000,
 otadata,  data, ota,     0xe000,  0x2000,
 phy_init, data, phy,     0x10000, 0x1000,
-ota_0,    app,  ota_0,   0x20000, 0x170000,
-ota_1,    app,  ota_1,   0x190000,0x170000,
+ota_0,    app,  ota_0,   0x20000, 0x1E0000,
+ota_1,    app,  ota_1,   0x200000,0x1E0000,
+storage,  data, spiffs,  0x3E0000,0x20000,
