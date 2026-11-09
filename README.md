@@ -1,3 +1,55 @@
+# Glove-M (zclaw firmware for ESP32-C3)
+
+This fork builds the **Glove-M** device: an ESP32-C3 voice assistant that
+talks over Telegram, links to peers over ESP-NOW, and lets you wire up
+peripherals (buttons, rotary encoder, ADC sensors, OLED/LCD, microphone,
+speaker) by chatting with it.
+
+**Pre-built firmware:** [Releases](https://github.com/Neito112/glove-m/releases)
+· images also live in [`firmware/`](firmware/README.md)
+
+### What is different from upstream zclaw
+
+| Area | Change |
+|---|---|
+| ESP-NOW | Bidirectional link (`main/espnow.c`), exposed as the `espnow_send` tool |
+| Peripherals | Driver layer for buttons, encoder, ADC, OLED (SSD1306), LCD (ST7789), mic and speaker (`main/peripheral*.c`) |
+| Request builder | Hand-written JSON writer (`main/json_builder.c`). The cJSON builder needed ~52 KB of heap at once, which does not fit on a 4 MB C3 target |
+| Model rotation | A model that fails twice or answers slower than 18 s is dropped and a free fallback takes over |
+| Partitions | Both OTA slots widened to 1.875 MB to fit the grown application |
+
+### Default model setup
+
+| Setting | Value |
+|---|---|
+| Backend | `openrouter` |
+| Primary model | `deepseek/deepseek-v4.1-flash-1017` |
+| Fallbacks | zero-cost `:free` OpenRouter models |
+
+### Flash and provision
+
+```sh
+esptool.py --chip esp32c3 --port COM12 write_flash \
+    0x0     firmware/esp32c3/bootloader.bin \
+    0x8000  firmware/esp32c3/partition-table.bin \
+    0x20000 firmware/esp32c3/glove-m-v2.13.0-esp32c3.bin
+
+bash scripts/provision.sh --port COM12 \
+    --ssid "<ssid>" --pass "<pass>" \
+    --backend openrouter --model "deepseek/deepseek-v4.1-flash-1017" \
+    --api-key "<openrouter-key>" \
+    --tg-token "<bot-token>" --tg-chat-ids "<chat-id>" --yes
+```
+
+### Build from source
+
+```sh
+idf.py -B build-esp32c3 build
+python3 -m unittest discover -s scripts/tests -v   # host tests
+```
+
+---
+
 # zclaw
 
 <img
@@ -17,7 +69,7 @@ It includes `zclaw` logic plus ESP-IDF/FreeRTOS runtime, Wi-Fi/networking, TLS/c
 Fun to use, fun to hack on.
 <br clear="right" />
 
-## Full Documentation
+## Upstream documentation
 
 Use the docs site for complete guides and reference.
 
